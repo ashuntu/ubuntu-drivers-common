@@ -1,3 +1,9 @@
+ubuntu-drivers-common (1:0.10.11ubuntu1) UNRELEASED; urgency=medium
+
+  * Add open_preferred to dbus output
+
+ -- ashton.nelson@canonical.com <ashton.nelson@canonical.com>  Wed, 26 Aug 2026 14:31:39 -0500
+
 ubuntu-drivers-common (1:0.10.11) stonking; urgency=medium
 
   * Refuse to install on lxc containers unless specified
