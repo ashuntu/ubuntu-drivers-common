@@ -31,6 +31,7 @@ class DriverInfo(TypedDict, total=False):
     from_distro: bool
     recommended: bool
     support: Optional[str]
+    open_preferred: bool
 
 
 class DeviceInfo(TypedDict, total=False):
@@ -1110,6 +1111,9 @@ def system_device_drivers(
                      recommended == True, and all others False.
       'support':     Value of the package's apt "Support" field ("PB", "NFB",
                      "LTSB" or "Legacy"), or None if it declares none.
+      'open_preferred': Boolean flag whether the "open" kernel module variant
+                     is preferred over the closed one for this package, per
+                     _is_open_prefered().
     """
     result: Dict[str, DeviceInfo] = {}
     if not apt_cache:
@@ -1137,6 +1141,8 @@ def system_device_drivers(
             drivers[pkg]["recommended"] = pkginfo["recommended"]
         if "support" in pkginfo:
             drivers[pkg]["support"] = pkginfo["support"]
+        if "open_preferred" in pkginfo:
+            drivers[pkg]["open_preferred"] = pkginfo["open_preferred"]
 
     # now determine the manual_install device flag: this is true iff all driver
     # packages are "manually installed"
