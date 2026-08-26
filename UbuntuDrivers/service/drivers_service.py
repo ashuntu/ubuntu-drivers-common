@@ -8,6 +8,7 @@ import sys
 from typing import Callable, List, Optional
 
 import UbuntuDrivers.detect
+from UbuntuDrivers.detect import DriverInfo
 
 import apt_pkg
 from gi.repository import Gio, GLib
@@ -45,6 +46,43 @@ def _dbus_error_name(domain: str) -> str:
     return _ERROR_FAILED
 
 
+def _extra_packages(
+    cache: apt_pkg.Cache, pkg_name: str, pkg_info: DriverInfo
+) -> List[str]:
+    """Return additional packages that should be installed alongside
+    *pkg_name*, beyond its ordinary apt dependencies: its kernel modules or
+    DKMS package, its LRM userspace package, and its GPGPU/headless
+    metapackage, if any of these apply.
+
+    Duplicates and unavailable entries are removed. Reports what
+    the driver requires regardless of what is already installed.
+    """
+    extras: List[str] = []
+
+    metapackage = pkg_info.get("metapackage")
+    if metapackage:
+        extras.append(metapackage)
+
+    modules_package = UbuntuDrivers.detect.get_linux_modules_metapackage(
+        cache, pkg_name
+    )
+    if modules_package:
+        extras.append(modules_package)
+
+    lrm_meta = UbuntuDrivers.detect.get_userspace_lrm_meta(cache, pkg_name)
+    if lrm_meta:
+        extras.append(lrm_meta)
+
+    # De-duplicate while preserving order.
+    seen = set()
+    result = []
+    for pkg in extras:
+        if pkg not in seen:
+            seen.add(pkg)
+            result.append(pkg)
+    return result
+
+
 def _build_drivers_variant() -> GLib.Variant:
     """Build the driver list as a D-Bus ``(aa{sv})`` GLib.Variant.
 
@@ -68,6 +106,13 @@ def _build_drivers_variant() -> GLib.Variant:
         support     s   apt Support field value (e.g. "PB"), empty if absent
         open_preferred b   whether the "open" kernel module variant is
                            preferred over the closed one for this driver
+        extra_packages
+                    as  additional packages to install alongside this
+                        driver (e.g. its kernel modules package), beyond
+                        its ordinary apt dependencies. See
+                        ``_extra_packages()`` for details. Reflects what
+                        the driver requires regardless of what is already
+                        installed.
 
     Raises:
         RuntimeError: if the apt cache cannot be initialized.
@@ -110,7 +155,9 @@ def _build_drivers_variant() -> GLib.Variant:
                         ),
                         "support": GLib.Variant("s", pkg_info.get("support") or ""),
                         "open_preferred": GLib.Variant(
-                            "b", bool(pkg_info.get("open_preferred", False))
+                            "b", bool(pkg_info.get("open_preferred", False))),
+                        "extra_packages": GLib.Variant(
+                            "as", _extra_packages(cache, pkg_name, pkg_info)
                         ),
                     },
                 )

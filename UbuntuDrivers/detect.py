@@ -32,6 +32,7 @@ class DriverInfo(TypedDict, total=False):
     recommended: bool
     support: Optional[str]
     open_preferred: bool
+    metapackage: str
 
 
 class DeviceInfo(TypedDict, total=False):
@@ -1114,6 +1115,8 @@ def system_device_drivers(
       'open_preferred': Boolean flag whether the "open" kernel module variant
                      is preferred over the closed one for this package, per
                      _is_open_preferred().
+      'metapackage': Name of the associated metapackage (e.g.
+                     "nvidia-headless-no-dkms-470"), if any.
     """
     result: Dict[str, DeviceInfo] = {}
     if not apt_cache:
@@ -1143,6 +1146,8 @@ def system_device_drivers(
             drivers[pkg]["support"] = pkginfo["support"]
         if "open_preferred" in pkginfo:
             drivers[pkg]["open_preferred"] = pkginfo["open_preferred"]
+        if "metapackage" in pkginfo:
+            drivers[pkg]["metapackage"] = pkginfo["metapackage"]
 
     # now determine the manual_install device flag: this is true iff all driver
     # packages are "manually installed"

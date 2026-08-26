@@ -41,13 +41,21 @@ class _AptChroot:
         self._saved_dir = None
         self._saved_status = None
 
-    def setup(self, archive):
+    def setup(self, archive, installed=()):
+        """Set up the chroot for *archive*.
+
+        installed: paths of .deb files (as returned by
+        testarchive.Archive.create_deb()) to install into the chroot via
+        real `dpkg`, so code that only considers installed packages (e.g.
+        kernel/image detection) can see them as such.
+        """
         for subdir in [
             "var/lib/dpkg",
             "var/cache/apt/archives/partial",
             "var/lib/apt/lists/partial",
             "etc/apt/apt.conf.d",
             "etc/apt/preferences.d",
+            "var/log",
         ]:
             os.makedirs(os.path.join(self.path, subdir), exist_ok=True)
         open(os.path.join(self.path, "var/lib/dpkg/status"), "w").close()
@@ -72,6 +80,22 @@ class _AptChroot:
             check=True,
             capture_output=True,
         )
+
+        for deb_path in installed:
+            subprocess.run(
+                [
+                    "fakeroot",
+                    "dpkg",
+                    "--root",
+                    self.path,
+                    "--log=%s/var/log/dpkg.log" % self.path,
+                    "--force-depends",
+                    "--install",
+                    deb_path,
+                ],
+                check=True,
+                capture_output=True,
+            )
 
         apt_pkg.init_config()
         self._saved_dir = apt_pkg.config.get("Dir", "/")
@@ -621,6 +645,244 @@ class BuildDriversPayloadTests(unittest.TestCase):
             drivers_service._build_drivers_variant()
 
         self.assertIn("apt cache error", str(ctx.exception))
+
+    def test_build_drivers_payload_extra_packages_empty(self):
+        """extra_packages is an empty list when the driver has no metapackage,
+        kernel modules, or LRM package (the fake archive ships none)."""
+        with patch.object(drivers_service, "sys_path", self._umockdev.get_sys_dir()):
+            result = _call_build_drivers()
+
+        by_device = {os.path.basename(e["sys_path"]): e for e in result}
+        by_name = {d["name"]: d for d in by_device["graphics"]["drivers"]}
+
+        self.assertEqual(by_name["nvidia-driver-450"]["extra_packages"], [])
+        self.assertEqual(by_name["nvidia-driver-390"]["extra_packages"], [])
+        self.assertEqual(by_name["xserver-xorg-video-nouveau"]["extra_packages"], [])
+        self.assertEqual(by_device["white"]["drivers"][0]["extra_packages"], [])
+
+
+def _gen_fakearchive_with_extras():
+    """Like gen_fakearchive(), plus a real nvidia-driver-lrm-450 package so
+    extra_packages can be exercised end-to-end without mocking the
+    detection helpers.
+    """
+    a = gen_fakearchive()
+    a.create_deb("nvidia-driver-lrm-450")
+    return a
+
+
+class ExtraPackagesIntegrationTests(unittest.TestCase):
+    """End-to-end test of extra_packages through system_device_drivers()."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._archive = _gen_fakearchive_with_extras()
+        cls._chroot = _AptChroot()
+        cls._chroot.setup(cls._archive)
+
+    @classmethod
+    def tearDownClass(cls):
+        if hasattr(cls, "_chroot"):
+            cls._chroot.remove()
+
+    def setUp(self):
+        self._umockdev = gen_fakehw()
+        self._plugin_dir = tempfile.mkdtemp()
+        self._old_detect_dir = os.environ.get("UBUNTU_DRIVERS_DETECT_DIR")
+        os.environ["UBUNTU_DRIVERS_DETECT_DIR"] = self._plugin_dir
+
+    def tearDown(self):
+        shutil.rmtree(self._plugin_dir)
+        if self._old_detect_dir is None:
+            os.environ.pop("UBUNTU_DRIVERS_DETECT_DIR", None)
+        else:
+            os.environ["UBUNTU_DRIVERS_DETECT_DIR"] = self._old_detect_dir
+
+    def test_extra_packages_includes_real_lrm_package(self):
+        with patch.object(drivers_service, "sys_path", self._umockdev.get_sys_dir()):
+            result = _call_build_drivers()
+
+        by_device = {os.path.basename(e["sys_path"]): e for e in result}
+        by_name = {d["name"]: d for d in by_device["graphics"]["drivers"]}
+
+        self.assertEqual(
+            by_name["nvidia-driver-450"]["extra_packages"],
+            ["nvidia-driver-lrm-450"],
+        )
+        # nvidia-driver-390 has no corresponding lrm package in the
+        # archive, so it should report no extras.
+        self.assertEqual(by_name["nvidia-driver-390"]["extra_packages"], [])
+
+
+def _gen_fakearchive_with_prebuilt_modules():
+    """Like gen_fakearchive(), plus a kernel and a matching prebuilt
+    linux-modules-nvidia-450-generic package.
+
+    Returns (archive, installed_deb_paths): the archive, and the .deb paths
+    for the kernel packages that must be installed.
+    """
+    a = gen_fakearchive()
+    kernel_image_deb = a.create_deb("linux-image-5.4.0-25-generic")
+    kernel_meta_deb = a.create_deb(
+        "linux-image-generic",
+        dependencies={"Depends": "linux-image-5.4.0-25-generic"},
+    )
+    a.create_deb(
+        "linux-modules-nvidia-450-5.4.0-25-generic",
+        dependencies={"Depends": "linux-image-5.4.0-25-generic"},
+    )
+    a.create_deb(
+        "linux-modules-nvidia-450-generic",
+        dependencies={"Depends": "linux-modules-nvidia-450-5.4.0-25-generic"},
+    )
+    return a, [kernel_image_deb, kernel_meta_deb]
+
+
+class ExtraPackagesPrebuiltModulesIntegrationTests(unittest.TestCase):
+    """End-to-end test of a driver for which a prebuilt kernel modules
+    package exists for the running kernel, so extra_packages should name it.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._archive, installed = _gen_fakearchive_with_prebuilt_modules()
+        cls._chroot = _AptChroot()
+        cls._chroot.setup(cls._archive, installed=installed)
+
+    @classmethod
+    def tearDownClass(cls):
+        if hasattr(cls, "_chroot"):
+            cls._chroot.remove()
+
+    def setUp(self):
+        self._umockdev = gen_fakehw()
+        self._plugin_dir = tempfile.mkdtemp()
+        self._old_detect_dir = os.environ.get("UBUNTU_DRIVERS_DETECT_DIR")
+        os.environ["UBUNTU_DRIVERS_DETECT_DIR"] = self._plugin_dir
+
+    def tearDown(self):
+        shutil.rmtree(self._plugin_dir)
+        if self._old_detect_dir is None:
+            os.environ.pop("UBUNTU_DRIVERS_DETECT_DIR", None)
+        else:
+            os.environ["UBUNTU_DRIVERS_DETECT_DIR"] = self._old_detect_dir
+
+    def test_extra_packages_includes_prebuilt_modules_package(self):
+        with patch.object(drivers_service, "sys_path", self._umockdev.get_sys_dir()):
+            result = _call_build_drivers()
+
+        by_device = {os.path.basename(e["sys_path"]): e for e in result}
+        by_name = {d["name"]: d for d in by_device["graphics"]["drivers"]}
+
+        self.assertEqual(
+            by_name["nvidia-driver-450"]["extra_packages"],
+            ["linux-modules-nvidia-450-generic"],
+        )
+        # nvidia-driver-390 has no matching linux-modules-nvidia-390-*
+        # package for this kernel, so it falls back silently to no extras
+        # here (the DKMS fallback itself isn't in this archive either).
+        self.assertEqual(by_name["nvidia-driver-390"]["extra_packages"], [])
+
+
+class ExtraPackagesTests(unittest.TestCase):
+    """Unit tests for _extra_packages() in isolation from apt/hardware state."""
+
+    def test_extra_packages_typical_case_is_just_the_modules_package(self):
+        """No metapackage or LRM package applies, and the driver just needs
+        a single prebuilt kernel modules package for the running kernel."""
+        with (
+            patch(
+                "UbuntuDrivers.detect.get_linux_modules_metapackage",
+                return_value="linux-modules-nvidia-450-generic",
+            ),
+            patch("UbuntuDrivers.detect.get_userspace_lrm_meta", return_value=None),
+        ):
+            result = drivers_service._extra_packages(None, "nvidia-driver-450", {})
+
+        self.assertEqual(result, ["linux-modules-nvidia-450-generic"])
+
+    def test_extra_packages_combines_all_sources_in_order(self):
+        """Exercises the general combining/ordering mechanism with all
+        three sources present at once."""
+        pkg_info = {"metapackage": "nvidia-headless-no-dkms-450"}
+        with (
+            patch(
+                "UbuntuDrivers.detect.get_linux_modules_metapackage",
+                return_value="linux-modules-nvidia-450-generic",
+            ),
+            patch(
+                "UbuntuDrivers.detect.get_userspace_lrm_meta",
+                return_value="nvidia-driver-lrm-450",
+            ),
+        ):
+            result = drivers_service._extra_packages(
+                None, "nvidia-driver-450", pkg_info
+            )
+
+        self.assertEqual(
+            result,
+            [
+                "nvidia-headless-no-dkms-450",
+                "linux-modules-nvidia-450-generic",
+                "nvidia-driver-lrm-450",
+            ],
+        )
+
+    def test_extra_packages_no_metapackage_key(self):
+        with (
+            patch(
+                "UbuntuDrivers.detect.get_linux_modules_metapackage",
+                return_value=None,
+            ),
+            patch("UbuntuDrivers.detect.get_userspace_lrm_meta", return_value=None),
+        ):
+            result = drivers_service._extra_packages(None, "vanilla", {})
+
+        self.assertEqual(result, [])
+
+    def test_extra_packages_deduplicates(self):
+        pkg_info = {"metapackage": "nvidia-dkms-450"}
+        with (
+            patch(
+                "UbuntuDrivers.detect.get_linux_modules_metapackage",
+                return_value="nvidia-dkms-450",
+            ),
+            patch("UbuntuDrivers.detect.get_userspace_lrm_meta", return_value=None),
+        ):
+            result = drivers_service._extra_packages(
+                None, "nvidia-driver-450", pkg_info
+            )
+
+        self.assertEqual(result, ["nvidia-dkms-450"])
+
+    def test_extra_packages_propagates_modules_lookup_exception(self):
+        """An unexpected failure in the modules lookup must not be silently
+        swallowed as "no extra packages"."""
+        pkg_info = {"metapackage": "nvidia-headless-no-dkms-450"}
+        with (
+            patch(
+                "UbuntuDrivers.detect.get_linux_modules_metapackage",
+                side_effect=AssertionError("simulated modules lookup failure"),
+            ),
+            patch("UbuntuDrivers.detect.get_userspace_lrm_meta", return_value=None),
+        ):
+            with self.assertRaises(AssertionError):
+                drivers_service._extra_packages(None, "nvidia-driver-450", pkg_info)
+
+    def test_extra_packages_propagates_lrm_lookup_exception(self):
+        """Same as above, for the LRM lookup."""
+        with (
+            patch(
+                "UbuntuDrivers.detect.get_linux_modules_metapackage",
+                return_value=None,
+            ),
+            patch(
+                "UbuntuDrivers.detect.get_userspace_lrm_meta",
+                side_effect=RuntimeError("simulated LRM lookup failure"),
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                drivers_service._extra_packages(None, "nvidia-driver-450", {})
 
 
 if __name__ == "__main__":
