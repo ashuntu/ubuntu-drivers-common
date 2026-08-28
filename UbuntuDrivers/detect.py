@@ -683,7 +683,7 @@ def _get_db_name(syspath: str, alias: str) -> Tuple[Optional[str], Optional[str]
     return (vendor, model)
 
 
-def _is_open_prefered(apt_cache: apt_pkg.Cache, pkg: apt_pkg.Package) -> bool:
+def _is_open_preferred(apt_cache: apt_pkg.Cache, pkg: apt_pkg.Package) -> bool:
     if not pkg.name.startswith("nvidia-"):
         return False
 
@@ -691,13 +691,13 @@ def _is_open_prefered(apt_cache: apt_pkg.Cache, pkg: apt_pkg.Package) -> bool:
     if preference is None:
         nvidia_info = NvidiaPkgNameInfo(pkg.name)
         if nvidia_info.get_major_version() >= 560:
-            logging.debug("_is_open_prefered(%s): True", pkg.name)
+            logging.debug("_is_open_preferred(%s): True", pkg.name)
             return True
     elif preference == "Open":
-        logging.debug("_is_open_prefered(%s): True", pkg.name)
+        logging.debug("_is_open_preferred(%s): True", pkg.name)
         return True
 
-    logging.debug("_is_open_prefered(%s): False", pkg.name)
+    logging.debug("_is_open_preferred(%s): False", pkg.name)
     return False
 
 
@@ -779,7 +779,7 @@ def system_driver_packages(
                 "from_distro": _is_package_from_distro(apt_cache, p),
                 "support": _pkg_get_support(apt_cache, p),
                 "runtimepm": _is_runtimepm_supported(apt_cache, p, alias),
-                "open_preferred": _is_open_prefered(apt_cache, p),
+                "open_preferred": _is_open_preferred(apt_cache, p),
             }
             (vendor, model) = _get_db_name(syspath, alias)
             if vendor is not None:
@@ -962,7 +962,7 @@ def system_device_specific_metapackages(
                 "from_distro": _is_package_from_distro(apt_cache, p),
                 "recommended": True,
                 "support": _pkg_get_support(apt_cache, p),
-                "open_preferred": _is_open_prefered(apt_cache, p),
+                "open_preferred": _is_open_preferred(apt_cache, p),
             }
 
     return packages
@@ -1026,7 +1026,7 @@ def system_gpgpu_driver_packages(
                     "free": _is_package_free(apt_cache, p),
                     "from_distro": _is_package_from_distro(apt_cache, p),
                     "support": _pkg_get_support(apt_cache, p),
-                    "open_preferred": _is_open_prefered(apt_cache, p),
+                    "open_preferred": _is_open_preferred(apt_cache, p),
                 }
                 if vendor is not None:
                     packages[p.name]["vendor"] = vendor
@@ -1113,7 +1113,7 @@ def system_device_drivers(
                      "LTSB" or "Legacy"), or None if it declares none.
       'open_preferred': Boolean flag whether the "open" kernel module variant
                      is preferred over the closed one for this package, per
-                     _is_open_prefered().
+                     _is_open_preferred().
     """
     result: Dict[str, DeviceInfo] = {}
     if not apt_cache:
