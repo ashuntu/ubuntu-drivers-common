@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 import signal
 import sys
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import UbuntuDrivers.detect
-from UbuntuDrivers.detect import DriverInfo
+from UbuntuDrivers.detect import NvidiaPkgNameInfo, PackageInfo
 
 import apt_pkg
 from gi.repository import Gio, GLib
@@ -25,6 +25,9 @@ DEFAULT_IDLE_TIMEOUT_SECONDS = 300
 # D-Bus error names returned by drivers().
 _ERROR_CACHE_FAILURE = "com.ubuntu.Drivers.Error.CacheFailure"
 _ERROR_FAILED = "com.ubuntu.Drivers.Error.Failed"
+
+# Matches the "ubuntu-drivers install" CLI default.
+_INCLUDE_DKMS = False
 
 # gi ships no type information, so GLib.SOURCE_REMOVE is Any and returning it
 # straight from a "-> bool" callback trips mypy's warn_return_any.  Binding it
@@ -46,41 +49,59 @@ def _dbus_error_name(domain: str) -> str:
     return _ERROR_FAILED
 
 
-def _extra_packages(
-    cache: apt_pkg.Cache, pkg_name: str, pkg_info: DriverInfo
+def _install_list(
+    cache: apt_pkg.Cache,
+    pkg_name: str,
+    catalog: Dict[str, PackageInfo],
+    gpgpu: bool,
 ) -> List[str]:
-    """Return additional packages that should be installed alongside
-    *pkg_name*, beyond its ordinary apt dependencies: its kernel modules or
-    DKMS package, its LRM userspace package, and its GPGPU/headless
-    metapackage, if any of these apply.
-
-    Duplicates and unavailable entries are removed. Reports what
-    the driver requires regardless of what is already installed.
+    """Return the packages that ``ubuntu-drivers install`` (or, when *gpgpu*
+    is set, ``ubuntu-drivers install --gpgpu``) would install for *pkg_name*.
+    This is the complete install set, even packages already installed.
     """
-    extras: List[str] = []
+    if pkg_name not in catalog:
+        return []
 
-    metapackage = pkg_info.get("metapackage")
-    if metapackage:
-        extras.append(metapackage)
+    if gpgpu:
+        return UbuntuDrivers.detect.gpgpu_install_filter(
+            cache,
+            _INCLUDE_DKMS,
+            catalog,
+            pkg_name,
+            get_recommended=False,
+            filter_installed=False,
+        )
 
-    modules_package = UbuntuDrivers.detect.get_linux_modules_metapackage(
-        cache, pkg_name
+    return UbuntuDrivers.detect.auto_install_filter(
+        cache,
+        _INCLUDE_DKMS,
+        catalog,
+        pkg_name,
+        get_recommended=False,
+        filter_installed=False,
     )
-    if modules_package:
-        extras.append(modules_package)
 
-    lrm_meta = UbuntuDrivers.detect.get_userspace_lrm_meta(cache, pkg_name)
-    if lrm_meta:
-        extras.append(lrm_meta)
 
-    # De-duplicate while preserving order.
-    seen = set()
-    result = []
-    for pkg in extras:
-        if pkg not in seen:
-            seen.add(pkg)
-            result.append(pkg)
-    return result
+def _package_lists(
+    cache: apt_pkg.Cache,
+    pkg_name: str,
+    desktop_catalog: Dict[str, PackageInfo],
+    gpgpu_catalog: Dict[str, PackageInfo],
+) -> Tuple[List[str], List[str]]:
+    """Return ``(packages, gpgpu_packages)`` for *pkg_name*: the install
+    lists that ``ubuntu-drivers install <pkg_name>`` and
+    ``ubuntu-drivers install --gpgpu <pkg_name>`` would each produce.
+    """
+    packages = _install_list(cache, pkg_name, desktop_catalog, gpgpu=False)
+    gpgpu_packages = _install_list(cache, pkg_name, gpgpu_catalog, gpgpu=True)
+
+    if not NvidiaPkgNameInfo(pkg_name).is_valid:
+        if not packages and pkg_name in desktop_catalog:
+            packages = [pkg_name]
+        if not gpgpu_packages and pkg_name in gpgpu_catalog:
+            gpgpu_packages = [pkg_name]
+
+    return packages, gpgpu_packages
 
 
 def _build_drivers_variant() -> GLib.Variant:
@@ -106,13 +127,11 @@ def _build_drivers_variant() -> GLib.Variant:
         support     s   apt Support field value (e.g. "PB"), empty if absent
         open_preferred b   whether the "open" kernel module variant is
                            preferred over the closed one for this driver
-        extra_packages
-                    as  additional packages to install alongside this
-                        driver (e.g. its kernel modules package), beyond
-                        its ordinary apt dependencies. See
-                        ``_extra_packages()`` for details. Reflects what
-                        the driver requires regardless of what is already
-                        installed.
+        packages    as  what ``ubuntu-drivers install <name>`` would
+                        install for this driver
+        gpgpu_packages
+                    as  what ``ubuntu-drivers install --gpgpu <name>`` would
+                        install for this driver
 
     Raises:
         RuntimeError: if the apt cache cannot be initialized.
@@ -128,6 +147,11 @@ def _build_drivers_variant() -> GLib.Variant:
         apt_cache=cache, sys_path=sys_path, freeonly=False
     )
 
+    desktop_catalog = UbuntuDrivers.detect.system_driver_packages(
+        cache, sys_path, freeonly=False
+    )
+    gpgpu_catalog = UbuntuDrivers.detect.system_gpgpu_driver_packages(cache, sys_path)
+
     device_list = []
 
     for device_name in sorted(devices):
@@ -140,6 +164,9 @@ def _build_drivers_variant() -> GLib.Variant:
             key=lambda item: (not item[1].get("recommended", False), item[0]),
         ):
             source = "distro" if pkg_info.get("from_distro", False) else "third-party"
+            packages, gpgpu_packages = _package_lists(
+                cache, pkg_name, desktop_catalog, gpgpu_catalog
+            )
             driver_list.append(
                 GLib.Variant(
                     "a{sv}",
@@ -156,9 +183,8 @@ def _build_drivers_variant() -> GLib.Variant:
                         "support": GLib.Variant("s", pkg_info.get("support") or ""),
                         "open_preferred": GLib.Variant(
                             "b", bool(pkg_info.get("open_preferred", False))),
-                        "extra_packages": GLib.Variant(
-                            "as", _extra_packages(cache, pkg_name, pkg_info)
-                        ),
+                        "packages": GLib.Variant("as", packages),
+                        "gpgpu_packages": GLib.Variant("as", gpgpu_packages),
                     },
                 )
             )
