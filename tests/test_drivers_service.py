@@ -883,6 +883,7 @@ class InstallListTests(unittest.TestCase):
             "nvidia-driver-450",
             get_recommended=False,
             filter_installed=False,
+            skip_runtimepm_marker=True,
         )
         self.assertEqual(
             result, ["nvidia-driver-450", "linux-modules-nvidia-450-generic"]
@@ -911,6 +912,7 @@ class InstallListTests(unittest.TestCase):
             "nvidia-driver-450",
             get_recommended=False,
             filter_installed=False,
+            skip_runtimepm_marker=True,
         )
         self.assertEqual(result, ["nvidia-headless-no-dkms-450", "nvidia-driver-450"])
 
