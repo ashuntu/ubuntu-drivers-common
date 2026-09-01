@@ -70,6 +70,7 @@ def _install_list(
             pkg_name,
             get_recommended=False,
             filter_installed=False,
+            skip_runtimepm_marker=True,
         )
 
     return UbuntuDrivers.detect.auto_install_filter(
@@ -79,6 +80,7 @@ def _install_list(
         pkg_name,
         get_recommended=False,
         filter_installed=False,
+        skip_runtimepm_marker=True,
     )
 
 
