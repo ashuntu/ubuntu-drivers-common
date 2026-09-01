@@ -97,6 +97,7 @@ def _package_lists(
     packages = _install_list(cache, pkg_name, desktop_catalog, gpgpu=False)
     gpgpu_packages = _install_list(cache, pkg_name, gpgpu_catalog, gpgpu=True)
 
+    # Ensure `pkg_name` is included in the returned lists for non-nvidia drivers
     if not NvidiaPkgNameInfo(pkg_name).is_valid:
         if not packages and pkg_name in desktop_catalog:
             packages = [pkg_name]
