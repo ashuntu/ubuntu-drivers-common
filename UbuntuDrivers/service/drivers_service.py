@@ -184,7 +184,8 @@ def _build_drivers_variant() -> GLib.Variant:
                         ),
                         "support": GLib.Variant("s", pkg_info.get("support") or ""),
                         "open_preferred": GLib.Variant(
-                            "b", bool(pkg_info.get("open_preferred", False))),
+                            "b", bool(pkg_info.get("open_preferred", False))
+                        ),
                         "packages": GLib.Variant("as", packages),
                         "gpgpu_packages": GLib.Variant("as", gpgpu_packages),
                     },
